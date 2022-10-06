@@ -1,0 +1,18 @@
+[package]
+name = "l4d2-uncut-patcher"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+# Git
+external = { git = "https://github.com/CasualX/external", rev = "2965c87" }
+# Cargo
+pretty_env_logger = "0.4"
+log = { version = "0.4", features = ["release_max_level_info"] }
+clap = { version = "4.0", features = ["std", "derive"] }
+anyhow = "1.0"
+regex = "1.6"
+winapi = { version = "0.3", default-features = false, features = ["processthreadsapi"] }
+drop_guard = "0.3.0"
