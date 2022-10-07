@@ -5,16 +5,13 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use external::prelude::{EnumModules, ModuleEntry};
+use external::prelude::{EnumModules, IntPtr, IntPtr64, ModuleEntry};
 use external::process::{Process, ProcessId, ProcessRights};
-use external::thread::{EnumThreads, ThreadRights};
+use external::thread::{EnumThreads, Thread, ThreadRights};
 use external::window::{find, Window};
-use external::IntoInner;
 use regex::bytes::Regex;
-use winapi::um::handleapi::CloseHandle;
-use winapi::um::processthreadsapi::{OpenThread, ResumeThread, SuspendThread};
 
-type Ptr<T = u8> = external::ptr::Ptr32<T>;
+type Ptr<T = u8> = IntPtr<T>;
 
 #[derive(Parser, Debug)]
 #[clap(about, author, version)]
@@ -22,6 +19,11 @@ struct Opt {
     /// If true the patcher will stay open and will keep looking for new instances of Left 4 Dead 2
     #[arg(long, default_value_t = false)]
     keep_open: bool,
+}
+
+#[inline(always)]
+fn as_ptr<T: ?Sized>(unit_ptr: usize) -> Ptr<T> {
+    unsafe { std::mem::transmute(unit_ptr) }
 }
 
 fn find_pattern(bytes: &[u8], patt: &'static str) -> Result<Vec<usize>> {
@@ -41,7 +43,7 @@ fn find_pattern(bytes: &[u8], patt: &'static str) -> Result<Vec<usize>> {
 
 fn dump_module(proc: &Process, module_entry: &ModuleEntry) -> Result<Vec<u8>> {
     let mut buffer = vec![0u8; module_entry.size()];
-    proc.vm_read_partial(Ptr::from(module_entry.base() as u32), &mut buffer)
+    proc.vm_read_partial(as_ptr(module_entry.base()), &mut buffer)
         .context("Failed to dump module")?;
 
     Ok(buffer)
@@ -51,18 +53,15 @@ fn resume_process(proc_id: ProcessId) -> Result<()> {
     let threads = EnumThreads::create().context("Failed to collect running threads")?;
     let threads = threads.filter(|thread| thread.process_id() == proc_id);
 
-    threads.for_each(|thread_entry| unsafe {
-        let thread_id = thread_entry.thread_id().into_inner();
-        let thread_access = ThreadRights::new().suspend_resume().into_inner();
-
-        let thread_handle = OpenThread(thread_access, 1, thread_id);
-        if !thread_handle.is_null() {
+    threads.for_each(|thread_entry| {
+        if let Ok(thread) =
+            Thread::attach(thread_entry.thread_id(), false, ThreadRights::new().suspend_resume())
+        {
             loop {
-                if matches!(ResumeThread(thread_handle), 0 | 0xFFFFFFFF) {
+                if matches!(thread.resume(), Ok(0) | Err(_)) {
                     break;
                 }
             }
-            CloseHandle(thread_handle);
         }
     });
 
@@ -73,14 +72,11 @@ fn suspend_process(proc_id: ProcessId) -> Result<()> {
     let threads = EnumThreads::create().context("Failed to collect running threads")?;
     let threads = threads.filter(|thread| thread.process_id() == proc_id);
 
-    threads.for_each(|thread_entry| unsafe {
-        let thread_id = thread_entry.thread_id().into_inner();
-        let thread_access = ThreadRights::new().suspend_resume().into_inner();
-
-        let thread_handle = OpenThread(thread_access, 1, thread_id);
-        if !thread_handle.is_null() {
-            SuspendThread(thread_handle);
-            CloseHandle(thread_handle);
+    threads.for_each(|thread_entry| {
+        if let Ok(thread) =
+            Thread::attach(thread_entry.thread_id(), false, ThreadRights::new().suspend_resume())
+        {
+            let _ = thread.suspend();
         }
     });
 
@@ -141,10 +137,10 @@ fn main() -> Result<()> {
                 let low_violence_var = find_pattern(&engine_buf, "\\xA2(....)\\xEB\\x37")
                     .context("Low violance variable pattern not found")?;
                 let low_violence_var = proc
-                    .vm_read::<Ptr<u32>>(Ptr::from(engine.base().add(low_violence_var[0]) as u32))
+                    .vm_read::<u32>(as_ptr(engine.base().add(low_violence_var[0])))
                     .context("Failed to read low violance variable address")?;
                 let low_violence_var = proc
-                    .vm_read::<u8>(low_violence_var.cast())
+                    .vm_read::<u8>(as_ptr(low_violence_var as _))
                     .context("Failed to read low violance variable")?;
 
                 if !matches!(low_violence_var, 0 | 1) {
@@ -162,7 +158,7 @@ fn main() -> Result<()> {
 
                 log::info!("Patching...");
 
-                proc.vm_write_bytes(engine.base().add(patch_addr[0]), &[0x32, 0xC0])
+                proc.vm_write_bytes(as_ptr(engine.base().add(patch_addr[0])), &[0x32, 0xC0])
                     .context("Failed to apply patch")?;
             }
         }

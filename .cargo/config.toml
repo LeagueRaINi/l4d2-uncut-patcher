@@ -2,4 +2,4 @@
 pubrel = "build --release -Zbuild-std=alloc,core,std,panic_abort,proc_macro -Zbuild-std-features=panic_immediate_abort"
 
 [build]
-target = "i686-pc-windows-msvc"
+target = "x86_64-pc-windows-msvc"
